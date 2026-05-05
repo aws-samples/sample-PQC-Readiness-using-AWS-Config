@@ -1,0 +1,103 @@
+Parameters:
+  ELBPQCCheckType:
+    Default: 'PQC'
+    Type: String
+    AllowedValues:
+      - 'PQC'
+    Description: 'Check type for ELB PQC rule'
+
+  ELBLegacyTLSCheckType:
+    Default: 'LEGACY_TLS'
+    Type: String
+    AllowedValues:
+      - 'LEGACY_TLS'
+    Description: 'Check type for ELB Legacy TLS rule'
+
+  APIGatewayPQCCheckType:
+    Default: 'PQC'
+    Type: String
+    AllowedValues:
+      - 'PQC'
+    Description: 'Check type for API Gateway PQC rule'
+
+  APIGatewayLegacyTLSCheckType:
+    Default: 'LEGACY_TLS'
+    Type: String
+    AllowedValues:
+      - 'LEGACY_TLS'
+    Description: 'Check type for API Gateway Legacy TLS rule'
+
+Resources:
+  # Config Rule 1: ELB PQC Compliance
+  ELBPQCComplianceRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: 'pqc-elb-pqc-compliance'
+      Description: 'Checks if ELB/ALB/NLB listeners use PQC-ready security policies (post-quantum cryptography)'
+      InputParameters:
+        checkType: !Ref ELBPQCCheckType
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-elb-compliance'
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+      Scope:
+        ComplianceResourceTypes:
+          - 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+
+  # Config Rule 2: ELB Legacy TLS Check
+  ELBLegacyTLSRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: 'pqc-elb-legacy-tls'
+      Description: 'Flags ELB/ALB/NLB listeners that allow TLS 1.0 or 1.1 (HIGH PRIORITY security issue)'
+      InputParameters:
+        checkType: !Ref ELBLegacyTLSCheckType
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-elb-compliance'
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+      Scope:
+        ComplianceResourceTypes:
+          - 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+
+  # Config Rule 3: API Gateway PQC Compliance
+  APIGatewayPQCComplianceRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: 'pqc-apigateway-pqc-compliance'
+      Description: 'Checks if API Gateway endpoints use PQC-ready security policies. Edge-optimized APIs excluded (inherit CloudFront PQC)'
+      InputParameters:
+        checkType: !Ref APIGatewayPQCCheckType
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-apigw-compliance'
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+      Scope:
+        ComplianceResourceTypes:
+          - 'AWS::ApiGateway::RestApi'
+          - 'AWS::ApiGatewayV2::Api'
+
+  # Config Rule 4: API Gateway Legacy TLS Check
+  APIGatewayLegacyTLSRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: 'pqc-apigateway-legacy-tls'
+      Description: 'Flags API Gateway endpoints that allow TLS 1.0 or 1.1 (HIGH PRIORITY security issue). Edge-optimized APIs excluded'
+      InputParameters:
+        checkType: !Ref APIGatewayLegacyTLSCheckType
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pqc-apigw-compliance'
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+      Scope:
+        ComplianceResourceTypes:
+          - 'AWS::ApiGateway::RestApi'
+          - 'AWS::ApiGatewayV2::Api'

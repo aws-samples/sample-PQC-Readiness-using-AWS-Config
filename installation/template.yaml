@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'AWS PQC and Legacy TLS Config Scanner - Simplified Binary Checks'
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 256
+    Runtime: python3.12
+    Tracing: Active
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Resources:
+  # ELB PQC/Legacy TLS Lambda Function
+  ELBComplianceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pqc-elb-compliance
+      CodeUri: ../lambda-functions/elb-pqc-compliance/
+      Handler: elb-pqc.lambda_handler
+      Description: 'PQC and Legacy TLS compliance scanner for ELB/ALB/NLB listeners'
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - elasticloadbalancing:DescribeLoadBalancers
+                - elasticloadbalancing:DescribeListeners
+                - config:PutEvaluations
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/pqc-elb-compliance:*'
+
+  # API Gateway PQC/Legacy TLS Lambda Function
+  APIGatewayComplianceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pqc-apigw-compliance
+      CodeUri: ../lambda-functions/api-gateway-pqc-compliance/
+      Handler: api-gateway-pqc.lambda_handler
+      Description: 'PQC and Legacy TLS compliance scanner for API Gateway endpoints'
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - apigateway:GET
+              Resource:
+                - !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/*'
+                - !Sub 'arn:aws:apigateway:${AWS::Region}::/apis/*'
+            - Effect: Allow
+              Action:
+                - config:PutEvaluations
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/pqc-apigw-compliance:*'
+
+  # Lambda Permissions for Config Service
+  ELBPQCLambdaConfigPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ELBComplianceFunction
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  ELBLegacyTLSLambdaConfigPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ELBComplianceFunction
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  APIGatewayPQCLambdaConfigPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref APIGatewayComplianceFunction
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  APIGatewayLegacyTLSLambdaConfigPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref APIGatewayComplianceFunction
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+Outputs:
+  StackName:
+    Description: 'PQC and Legacy TLS Config Scanner stack name'
+    Value: !Ref AWS::StackName
+    Export:
+      Name: !Sub '${AWS::StackName}-StackName'
+
+  # Lambda Function Outputs
+  ELBComplianceFunctionArn:
+    Description: 'ARN of the ELB compliance scanner Lambda function'
+    Value: !GetAtt ELBComplianceFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ELBFunction'
+
+  APIGatewayComplianceFunctionArn:
+    Description: 'ARN of the API Gateway compliance scanner Lambda function'
+    Value: !GetAtt APIGatewayComplianceFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-APIGatewayFunction'
+
+  # Deployment Information
+  ComplianceFramework:
+    Description: 'Simplified binary check framework details'
+    Value: 'PQC Compliance (yes/no) + Legacy TLS Check (TLS 1.0/1.1 flagged) | Scope: ELB+APIGatewayRegional | Explicit policy lists from AWS documentation'
+    Export:
+      Name: !Sub '${AWS::StackName}-Framework'
+
+  DeploymentInstructions:
+    Description: 'Deployment and usage instructions'
+    Value: 'Step 1: sam build && sam deploy (deploys Lambda functions). Step 2: Deploy conformance pack with Lambda ARNs. Step 3: Check AWS Config console for compliance results'
+    Export:
+      Name: !Sub '${AWS::StackName}-Instructions'
+
+  ConformancePackTemplate:
+    Description: 'Path to conformance pack template'
+    Value: 'conformance-packs/pqc-legacy-tls-conformance-pack.yaml'
+    Export:
+      Name: !Sub '${AWS::StackName}-ConformancePackPath'
