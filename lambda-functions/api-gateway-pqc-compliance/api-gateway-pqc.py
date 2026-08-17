@@ -1,20 +1,47 @@
 import json
 import logging
+import boto3
 import time
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Tier 1: TLS 1.3 only with PQC key exchange (optimal)
+def extract_api_id(resource_id):
+    """
+    Extract API ID from ARN or return as-is if already just an ID.
+    
+    AWS Config sends the full ARN in the format:
+      arn:aws:apigateway:region::/restapis/API_ID
+      arn:aws:apigateway:region::/apis/API_ID
+    
+    But API Gateway boto3 calls (get_rest_api, get_api, etc.) expect just the API_ID.
+    
+    Args:
+        resource_id: Either a full ARN or just an API ID
+    
+    Returns:
+        Just the API ID (last component after the final /)
+    """
+    if resource_id.startswith('arn:'):
+        # ARN format: arn:aws:apigateway:region::/restapis/API_ID
+        # Extract the last component after /
+        return resource_id.split('/')[-1]
+    return resource_id
+
+# Tier 1: TLS 1.3 only with PQC key exchange (optimal - NONE EXIST YET)
+# AWS has not released TLS 1.3-only policies with PQC key exchange.
+# SecurityPolicy_TLS13_1_3_2025_09 and SecurityPolicy_TLS13_1_3_FIPS_2025_09
+# are TLS 1.3-only but do NOT include PQC key exchange (no _PQ_ in name).
+# When AWS releases Tier 1 policies, they will contain _PQ_ (e.g.
+# SecurityPolicy_TLS13_1_3_PQ_2025_09). Add them here when available.
 APIGW_TIER1_POLICIES = [
-    'SecurityPolicy_TLS13_1_3_2025_09',
-    'SecurityPolicy_TLS13_1_3_FIPS_2025_09',
 ]
 
 # Tier 2: TLS 1.2+1.3 with PQC key exchange (backward compatible)
 APIGW_TIER2_POLICIES = [
     'SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09',
+    'SecurityPolicy_TLS13_1_2_FIPS_PQ_2025_09',
     'SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09',
     'SecurityPolicy_TLS13_1_2_PQ_2025_09',
 ]
@@ -46,6 +73,110 @@ def get_policy_tier(security_policy):
         return 2
     else:
         return 3
+
+def get_rest_api_security_policy(resource_id):
+    """
+    Makes a live API call to apigateway:GetRestApi to retrieve the actual
+    security policy. The AWS Config configuration item may not reliably
+    reflect PQC security policies (it often only shows TLS_1_0 or TLS_1_2).
+    
+    Returns the security policy string or None if retrieval fails.
+    """
+    try:
+        apigw_client = boto3.client('apigateway')
+        
+        # Extract just the API ID from the full ARN if needed
+        api_id = extract_api_id(resource_id)
+        
+        response = apigw_client.get_rest_api(restApiId=api_id)
+        security_policy = response.get('securityPolicy')
+        
+        logger.info(f"Retrieved securityPolicy for API {api_id}: {security_policy}")
+        return security_policy
+        
+    except Exception as e:
+        logger.error(f"Failed to call GetRestApi for {resource_id}: {str(e)}", exc_info=True)
+        return None
+
+
+def get_custom_domain_policy_for_rest_api(resource_id):
+    """
+    Checks if the REST API has Custom Domain Name associations and retrieves
+    the security policy from the Custom Domain.
+    
+    Uses pagination to handle accounts with >500 domains, and includes
+    retry logic with exponential backoff for API rate limits.
+    
+    Returns: (best_policy, domain_name) or (None, None)
+    """
+    try:
+        import time as _time
+        apigw_client = boto3.client('apigateway')
+        
+        # Extract just the API ID from the full ARN if needed
+        api_id = extract_api_id(resource_id)
+        
+        # Paginate through all custom domain names
+        domains = []
+        kwargs = {'limit': 500}
+        while True:
+            domains_response = apigw_client.get_domain_names(**kwargs)
+            domains.extend(domains_response.get('items', []))
+            position = domains_response.get('position')
+            if not position:
+                break
+            kwargs['position'] = position
+        
+        best_policy = None
+        best_domain = None
+        best_tier = 3
+        
+        for domain in domains:
+            domain_name = domain.get('domainName', '')
+            domain_security_policy = domain.get('securityPolicy')
+            
+            if domain_security_policy is None:
+                continue
+            
+            # Skip domains whose policy isn't better than what we already have
+            domain_tier = get_policy_tier(domain_security_policy)
+            if domain_tier >= best_tier:
+                continue
+            
+            # Check if this domain maps to our REST API
+            try:  
+                mappings = []
+                map_kwargs = {'domainName': domain_name, 'limit': 500}
+                while True:
+                    mappings_response = apigw_client.get_base_path_mappings(**map_kwargs)
+                    mappings.extend(mappings_response.get('items', []))
+                    pos = mappings_response.get('position')
+                    if not pos:
+                        break
+                    map_kwargs['position'] = pos
+                
+                for mapping in mappings:
+                    if mapping.get('restApiId') == api_id:
+                        best_tier = domain_tier
+                        best_policy = domain_security_policy
+                        best_domain = domain_name
+                        break
+            except apigw_client.exceptions.TooManyRequestsException:
+                logger.warning(f"Rate limited on GetBasePathMappings for {domain_name}, backing off")
+                _time.sleep(1)
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to get mappings for domain {domain_name}: {str(e)}")
+                continue
+        
+        return best_policy, best_domain
+    except apigw_client.exceptions.TooManyRequestsException:
+        logger.warning(f"Rate limited on GetDomainNames for REST API {resource_id}")
+        return None, None
+    except Exception as e:
+        logger.warning(f"Failed to check custom domains for REST API {resource_id}: {str(e)}")
+        return None, None
+
 
 def lambda_handler(event, context):
     """
@@ -90,7 +221,6 @@ def lambda_handler(event, context):
                 )
             
             # Send evaluation back to AWS Config
-            import boto3
             config_client = boto3.client('config')
             config_client.put_evaluations(
                 Evaluations=[compliance_result],
@@ -142,17 +272,38 @@ def evaluate_rest_api(config_item, check_type):
         # Handle securityPolicy - Private APIs with null policy use legacy TLS 1.2 default
         security_policy = configuration.get('securityPolicy')
         
-        if security_policy is None:
+        logger.info(f"Evaluating REST API: {api_name}, Config policy: {security_policy}")
+        
+        # If Config CI securityPolicy is null or a generic value (TLS_1_0/TLS_1_2),
+        # make live API calls to get the actual policy
+        if security_policy is None or security_policy in ('TLS_1_0', 'TLS_1_2'):
+            # Step 1: Try live GetRestApi call
+            live_policy = get_rest_api_security_policy(resource_id)
+            
+            if live_policy and live_policy != security_policy:
+                logger.info(f"Updated policy from '{security_policy}' to '{live_policy}' via live API")
+                security_policy = live_policy
+            
+            # Step 2: Check Custom Domain associations for a better policy
+            if get_policy_tier(security_policy) if security_policy else 3 >= 2:
+                domain_policy, domain_name = get_custom_domain_policy_for_rest_api(resource_id)
+                if domain_policy:
+                    domain_tier = get_policy_tier(domain_policy)
+                    current_tier = get_policy_tier(security_policy) if security_policy else 3
+                    if domain_tier < current_tier:
+                        logger.info(f"Using Custom Domain '{domain_name}' policy: {domain_policy} (Tier {domain_tier})")
+                        security_policy = domain_policy
+        
+        # Final fallback if still None after live checks
+        if security_policy is None or security_policy == '':
             if is_private:
-                # Private APIs without explicit policy use TLS 1.2 via VPC Endpoint
                 security_policy = 'TLS_1_2'
-                logger.info(f"Private REST API: {api_name}, using legacy TLS 1.2 default (no explicit policy)")
+                logger.info(f"Private API fallback: using TLS_1_2 default")
             else:
-                # Regional/Edge APIs default to TLS_1_0 per AWS docs
                 security_policy = 'TLS_1_0'
-                logger.info(f"REST API: {api_name}, defaulting to TLS_1_0 (no explicit policy)")
-        else:
-            logger.info(f"REST API: {api_name}, Policy: {security_policy}, Endpoints: {endpoint_types}")
+                logger.info(f"Public API fallback: using TLS_1_0 default")
+        
+        logger.info(f"Final policy for evaluation: {security_policy}")
         
         # Evaluate based on check type
         if check_type == 'PQC':

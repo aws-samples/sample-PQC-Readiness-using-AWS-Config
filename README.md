@@ -349,6 +349,18 @@ TLS_1_0  (allows TLS 1.0, 1.1, 1.2, 1.3)
     Recommended: ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"
 ```
 
+### API Gateway API Types and PQC Support
+
+| API Type | Security Policy | PQC Support | Scanner Result |
+|----------|----------------|-------------|----------------|
+| REST API (Regional/Private) | Configurable — supports PQC policies | ✅ Yes | Evaluated for PQC readiness |
+| REST API (Edge-optimized) | Inherits from CloudFront | N/A (CloudFront handles PQC) | NOT_APPLICABLE |
+| HTTP API (v2) | Fixed at `TLS_1_2` by AWS | ❌ Not yet | NON_COMPLIANT (Tier 3) |
+| WebSocket API (v2) | Fixed at `TLS_1_2` by AWS | ❌ Not yet | NON_COMPLIANT (Tier 3) |
+
+> **Note:** HTTP and WebSocket APIs do not currently support configurable security policies or PQC key exchange.
+> They are fixed at `TLS_1_2` by AWS. When AWS adds PQC support for these API types, the scanner will need to be updated.
+
 ### Legacy TLS Check
 
 | Status | Meaning | Action |
@@ -368,6 +380,8 @@ TLS_1_0  (allows TLS 1.0, 1.1, 1.2, 1.3)
 
 ### Recommended Security Policies
 
+**PQC-ready policies** contain `_PQ_` in the name, indicating hybrid post-quantum key exchange support.
+
 **For ELB/ALB/NLB:**
 - **Balanced (recommended):** `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09`
 - **Maximum security:** `ELBSecurityPolicy-TLS13-1-3-PQ-2025-09`
@@ -376,6 +390,11 @@ TLS_1_0  (allows TLS 1.0, 1.1, 1.2, 1.3)
 **For API Gateway:**
 - **Recommended:** `SecurityPolicy_TLS13_1_2_PQ_2025_09`
 - **With Perfect Forward Secrecy:** `SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09`
+
+> **Note:** Policies without `_PQ_` in the name (e.g., `SecurityPolicy_TLS13_1_3_2025_09`,
+> `SecurityPolicy_TLS13_1_3_FIPS_2025_09`) support TLS 1.3 but do **not** include
+> post-quantum key exchange. They are classified as **NON_COMPLIANT** by the PQC check.
+> AWS has not yet released TLS 1.3-only policies with PQC key exchange.
 
 ### Pre-Remediation Checklist
 
@@ -399,6 +418,7 @@ TLS_1_0  (allows TLS 1.0, 1.1, 1.2, 1.3)
 | Script fails with "Config not enabled" | Enable AWS Config in the target region first |
 | Permission denied | Ensure credentials have IAM permissions for Lambda, Config, CloudFormation |
 | "Edge-optimized API" marked NOT_APPLICABLE | Expected - these inherit PQC from CloudFront |
+| REST API shows Tier 3 despite PQC policy | The scanner uses a live `GetRestApi` call and Custom Domain lookup as fallbacks. If neither returns the PQC policy, this is a known API Gateway limitation — the `securityPolicy` field may not be exposed for REGIONAL REST APIs with PQC policies set directly (without Custom Domains). Use Custom Domains for reliable detection. |
 
 ### Viewing Lambda Logs
 

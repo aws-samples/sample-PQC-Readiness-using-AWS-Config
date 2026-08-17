@@ -53,6 +53,8 @@ Resources:
                 - apigateway:GET
               Resource:
                 - !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/*'
+                - !Sub 'arn:aws:apigateway:${AWS::Region}::/domainnames'
+                - !Sub 'arn:aws:apigateway:${AWS::Region}::/domainnames/*'
                 - !Sub 'arn:aws:apigateway:${AWS::Region}::/apis/*'
             - Effect: Allow
               Action:

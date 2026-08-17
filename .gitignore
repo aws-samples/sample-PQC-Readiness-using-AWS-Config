@@ -1,0 +1,17 @@
+# Testing artifacts (not for public AWS samples)
+testing/
+
+# Internal task documentation
+CLINE_TASK_SECURITYHUB_INTEGRATION.md
+SECURITY_FINDINGS.md
+
+# Local SAM configuration (may contain account-specific settings)
+installation/samconfig.toml
+installation/packaged-template.yaml
+installation/.aws-sam/
+
+# macOS system files
+.DS_Store
+
+# ASH security scan output (if run locally)
+ash_output/
